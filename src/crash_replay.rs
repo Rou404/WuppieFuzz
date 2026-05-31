@@ -1,17 +1,34 @@
 #![allow(dead_code)]
 
 use crate::{
+    authentication::{Authentication, build_http_client},
+    configuration::Configuration,
     crash_identity::{CrashIdentity, CrashKind, ObservedExitKind, ResponseClass},
-    openapi::validate_response::{Response, ValidationError, ValidationErrorDiscriminants},
+    executor::process_response,
+    input::{OpenApiInput, OpenApiRequest},
+    openapi::{
+        build_request::build_request_from_input,
+        spec::Spec,
+        validate_response::{Response, ValidationError, ValidationErrorDiscriminants},
+    },
+    parameter_feedback::ParameterFeedback,
 };
+use std::time::Duration;
+
+use anyhow::Result;
+use libafl::executors::ExitKind;
+use libafl_bolts::HasLen;
 use reqwest::StatusCode;
 use strum::IntoDiscriminant;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedCrash {
     pub identity: CrashIdentity,
     pub crashing_request_index: usize,
 }
 fn coarse_response_class(response: &Response) -> ResponseClass {
+    // This uses WuppieFuzz's buffered Response wrapper, so reading JSON/text here
+    // does not consume the response for later validation or status access.
     if response.content_length() == 0 {
         return ResponseClass::Empty;
     }
@@ -93,6 +110,181 @@ fn observed_response_identity(
         endpoint,
         response_class,
     }
+}
+
+enum ReplayStep {
+    Continue,
+    Stop,
+    Crash(ObservedCrash),
+}
+
+enum BuiltReplayRequest {
+    Request(reqwest::blocking::Request),
+    // WuppieFuzz could not turn this input into a request; keep replaying the sequence.
+    Skip,
+    // Reqwest rejected the already-built request; mirror reproducer behavior and stop replay.
+    Stop,
+}
+
+pub fn replay_input(
+    input: &OpenApiInput,
+    api: &Spec,
+    config: &Configuration,
+) -> Result<Option<ObservedCrash>> {
+    let (mut authentication, cookie_store, client) = build_http_client(api)?;
+
+    replay_input_with_client(
+        input,
+        api,
+        config.request_timeout,
+        &config.crash_criteria,
+        &client,
+        &mut authentication,
+        &cookie_store,
+    )
+}
+
+fn replay_input_with_client(
+    input: &OpenApiInput,
+    api: &Spec,
+    request_timeout_ms: u64,
+    crash_criteria: &[ValidationErrorDiscriminants],
+    client: &reqwest::blocking::Client,
+    authentication: &mut Authentication,
+    cookie_store: &std::sync::Arc<reqwest_cookie_store::CookieStoreMutex>,
+) -> Result<Option<ObservedCrash>> {
+    let mut parameter_feedback = ParameterFeedback::new(input.len());
+    for (request_index, request) in input.0.iter().enumerate() {
+        match replay_request(
+            request_index,
+            request,
+            api,
+            request_timeout_ms,
+            crash_criteria,
+            client,
+            authentication,
+            cookie_store,
+            &mut parameter_feedback,
+        )? {
+            ReplayStep::Continue => {}
+            ReplayStep::Stop => break,
+            ReplayStep::Crash(crash) => return Ok(Some(crash)),
+        }
+    }
+
+    Ok(None)
+}
+fn replay_request(
+    request_index: usize,
+    request: &OpenApiRequest,
+    api: &Spec,
+    request_timeout_ms: u64,
+    crash_criteria: &[ValidationErrorDiscriminants],
+    client: &reqwest::blocking::Client,
+    authentication: &mut Authentication,
+    cookie_store: &std::sync::Arc<reqwest_cookie_store::CookieStoreMutex>,
+    parameter_feedback: &mut ParameterFeedback,
+) -> Result<ReplayStep> {
+    let mut request = request.clone();
+
+    if let Err(error) = request.resolve_parameter_references(parameter_feedback) {
+        log::debug!(
+            "Cannot instantiate request while replaying crash: missing backreference: {error}"
+        );
+        return Ok(ReplayStep::Stop);
+    }
+
+    parameter_feedback.process_request(request_index, &request);
+
+    let request_built = match build_replay_request(
+        client,
+        authentication,
+        cookie_store,
+        api,
+        request_timeout_ms,
+        &request,
+    )? {
+        BuiltReplayRequest::Request(request) => request,
+        BuiltReplayRequest::Skip => return Ok(ReplayStep::Continue),
+        BuiltReplayRequest::Stop => return Ok(ReplayStep::Stop),
+    };
+
+    match client.execute(request_built) {
+        Ok(response) => {
+            let response: Response = response.into();
+            let response_class = coarse_response_class(&response);
+            let mut exit_kind = ExitKind::Ok;
+
+            let validation_error = process_response(
+                request_index,
+                &request,
+                &response,
+                api,
+                crash_criteria,
+                &mut exit_kind,
+                parameter_feedback,
+            );
+
+            if exit_kind == ExitKind::Crash {
+                Ok(ReplayStep::Crash(ObservedCrash {
+                    identity: observed_response_identity(
+                        response.status(),
+                        validation_error.as_ref(),
+                        Some(endpoint_string(&request)),
+                        response_class,
+                    ),
+                    crashing_request_index: request_index,
+                }))
+            } else {
+                Ok(ReplayStep::Continue)
+            }
+        }
+        Err(error) => Ok(ReplayStep::Crash(ObservedCrash {
+            identity: observed_transport_identity(&error, Some(endpoint_string(&request))),
+            crashing_request_index: request_index,
+        })),
+    }
+}
+fn build_replay_request(
+    client: &reqwest::blocking::Client,
+    authentication: &mut Authentication,
+    cookie_store: &std::sync::Arc<reqwest_cookie_store::CookieStoreMutex>,
+    api: &Spec,
+    request_timeout_ms: u64,
+    request: &OpenApiRequest,
+) -> Result<BuiltReplayRequest> {
+    let request_builder =
+        match build_request_from_input(client, authentication, cookie_store, api, request) {
+            Ok(builder) => builder.timeout(Duration::from_millis(request_timeout_ms)),
+            Err(error) => {
+                log::warn!("Could not generate HTTP request while replaying crash: {error}");
+                return Ok(BuiltReplayRequest::Skip);
+            }
+        };
+
+    match request_builder.build() {
+        Ok(request) => Ok(BuiltReplayRequest::Request(request)),
+        Err(error) => {
+            log::warn!("Reqwest failed to build replay request: {error}");
+            Ok(BuiltReplayRequest::Stop)
+        }
+    }
+}
+fn observed_transport_identity(error: &reqwest::Error, endpoint: Option<String>) -> CrashIdentity {
+    CrashIdentity {
+        // The executor reports all transport failures as LibAFL timeouts; CrashKind keeps
+        // the more specific timeout/connection/decode distinction.
+        exit_kind: ObservedExitKind::Timeout,
+        crash_kind: transport_crash_kind(error),
+        http_status: None,
+        validation_error_discriminant: None,
+        endpoint,
+        response_class: transport_response_class(error),
+    }
+}
+
+fn endpoint_string(request: &OpenApiRequest) -> String {
+    format!("{} {}", request.method, request.path)
 }
 
 #[cfg(test)]
