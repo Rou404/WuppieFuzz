@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 
 use crate::{
-    crash_identity::{CrashIdentity, CrashKind, ResponseClass},
-    openapi::validate_response::{Response, ValidationError},
+    crash_identity::{CrashIdentity, CrashKind, ObservedExitKind, ResponseClass},
+    openapi::validate_response::{Response, ValidationError, ValidationErrorDiscriminants},
 };
-use libafl::executors::ExitKind;
 use reqwest::StatusCode;
 use strum::IntoDiscriminant;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,19 +45,13 @@ fn looks_like_html(text: &str) -> bool {
 fn response_crash_kind(
     status: StatusCode,
     validation_error: Option<&ValidationError>,
-    exit_kind: ExitKind,
-) -> Option<CrashKind> {
-    if exit_kind != ExitKind::Crash {
-        return None;
-    }
+) -> CrashKind {
     if status.is_server_error() {
-        return Some(CrashKind::Http5xx);
+        return CrashKind::Http5xx;
     }
-    Some(
-        validation_error
-            .map(|err| CrashKind::Validation(format!("{:?}", err.discriminant())))
-            .unwrap_or(CrashKind::HttpResponseCrash),
-    )
+    validation_error
+        .map(|err| CrashKind::Validation(err.discriminant()))
+        .unwrap_or(CrashKind::HttpResponseCrash)
 }
 
 fn transport_response_class(error: &reqwest::Error) -> ResponseClass {
@@ -88,16 +81,12 @@ fn transport_crash_kind(error: &reqwest::Error) -> CrashKind {
 fn observed_response_identity(
     status: StatusCode,
     validation_error: Option<&ValidationError>,
-    exit_kind: ExitKind,
     endpoint: Option<String>,
     response_class: ResponseClass,
 ) -> CrashIdentity {
-    let crash_kind = response_crash_kind(status, validation_error, exit_kind)
-        .expect("observed response identity requires a crash exit kind");
-
     CrashIdentity {
-        exit_kind: format!("{exit_kind:?}"),
-        crash_kind,
+        exit_kind: ObservedExitKind::Crash,
+        crash_kind: response_crash_kind(status, validation_error),
         http_status: Some(status.as_u16()),
         validation_error_discriminant: validation_error
             .map(|err| format!("{:?}", err.discriminant())),
@@ -119,24 +108,12 @@ mod tests {
     }
 
     #[test]
-    fn response_crash_kind_is_absent_when_exit_kind_is_not_crash() {
-        assert_eq!(
-            response_crash_kind(StatusCode::OK, None, ExitKind::Ok),
-            None
-        );
-    }
-
-    #[test]
     fn response_crash_kind_prefers_http_5xx() {
         let validation_error = validation_error();
 
         assert_eq!(
-            response_crash_kind(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Some(&validation_error),
-                ExitKind::Crash,
-            ),
-            Some(CrashKind::Http5xx)
+            response_crash_kind(StatusCode::INTERNAL_SERVER_ERROR, Some(&validation_error),),
+            CrashKind::Http5xx
         );
     }
 
@@ -145,20 +122,16 @@ mod tests {
         let validation_error = validation_error();
 
         assert_eq!(
-            response_crash_kind(
-                StatusCode::BAD_REQUEST,
-                Some(&validation_error),
-                ExitKind::Crash,
-            ),
-            Some(CrashKind::Validation("OperationNotInSpec".into()))
+            response_crash_kind(StatusCode::BAD_REQUEST, Some(&validation_error),),
+            CrashKind::Validation(ValidationErrorDiscriminants::OperationNotInSpec)
         );
     }
 
     #[test]
     fn response_crash_kind_falls_back_for_unclassified_response_crash() {
         assert_eq!(
-            response_crash_kind(StatusCode::BAD_REQUEST, None, ExitKind::Crash),
-            Some(CrashKind::HttpResponseCrash)
+            response_crash_kind(StatusCode::BAD_REQUEST, None),
+            CrashKind::HttpResponseCrash
         );
     }
 
@@ -175,12 +148,11 @@ mod tests {
         let identity = observed_response_identity(
             StatusCode::INTERNAL_SERVER_ERROR,
             None,
-            ExitKind::Crash,
             Some("GET /items/{id}".into()),
             ResponseClass::Json,
         );
 
-        assert_eq!(identity.exit_kind, "Crash");
+        assert_eq!(identity.exit_kind, ObservedExitKind::Crash);
         assert_eq!(identity.crash_kind, CrashKind::Http5xx);
         assert_eq!(identity.http_status, Some(500));
         assert_eq!(identity.validation_error_discriminant, None);
@@ -195,7 +167,6 @@ mod tests {
         let identity = observed_response_identity(
             StatusCode::BAD_REQUEST,
             Some(&validation_error),
-            ExitKind::Crash,
             Some("GET /items/{id}".into()),
             ResponseClass::Json,
         );
@@ -206,7 +177,7 @@ mod tests {
         );
         assert_eq!(
             identity.crash_kind,
-            CrashKind::Validation("OperationNotInSpec".into())
+            CrashKind::Validation(ValidationErrorDiscriminants::OperationNotInSpec)
         );
     }
 }

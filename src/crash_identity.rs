@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
+use crate::openapi::validate_response::ValidationErrorDiscriminants;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CrashKind {
     Http5xx,
-    Validation(String),
+    Validation(ValidationErrorDiscriminants),
     HttpResponseCrash,
     TransportTimeout,
     TransportConnectionError,
@@ -15,7 +17,7 @@ impl std::fmt::Display for CrashKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Http5xx => f.write_str("http_5xx"),
-            Self::Validation(discriminant) => write!(f, "validation_{discriminant}"),
+            Self::Validation(discriminant) => write!(f, "validation_{discriminant:?}"),
             Self::HttpResponseCrash => f.write_str("http_response_crash"),
             Self::TransportTimeout => f.write_str("transport_timeout"),
             Self::TransportConnectionError => f.write_str("transport_connection_error"),
@@ -57,10 +59,25 @@ impl std::fmt::Display for ResponseClass {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObservedExitKind {
+    Crash,
+    Timeout,
+}
+
+impl std::fmt::Display for ObservedExitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Crash => f.write_str("Crash"),
+            Self::Timeout => f.write_str("Timeout"),
+        }
+    }
+}
+
 /// Coarse identity used to group crashes with similar characteristics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrashIdentity {
-    pub exit_kind: String,
+    pub exit_kind: ObservedExitKind,
     pub crash_kind: CrashKind,
     pub http_status: Option<u16>,
     pub validation_error_discriminant: Option<String>,
@@ -115,7 +132,7 @@ mod tests {
 
     fn identity() -> CrashIdentity {
         CrashIdentity {
-            exit_kind: "Crash".into(),
+            exit_kind: ObservedExitKind::Crash,
             crash_kind: CrashKind::Http5xx,
             http_status: Some(500),
             validation_error_discriminant: None,
