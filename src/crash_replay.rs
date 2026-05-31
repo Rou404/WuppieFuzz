@@ -1,5 +1,13 @@
 #![allow(dead_code)]
 
+use std::time::Duration;
+
+use anyhow::Result;
+use libafl::executors::ExitKind;
+use libafl_bolts::HasLen;
+use reqwest::StatusCode;
+use strum::IntoDiscriminant;
+
 use crate::{
     authentication::{Authentication, build_http_client},
     configuration::Configuration,
@@ -13,13 +21,6 @@ use crate::{
     },
     parameter_feedback::ParameterFeedback,
 };
-use std::time::Duration;
-
-use anyhow::Result;
-use libafl::executors::ExitKind;
-use libafl_bolts::HasLen;
-use reqwest::StatusCode;
-use strum::IntoDiscriminant;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedCrash {
@@ -289,14 +290,64 @@ fn endpoint_string(request: &OpenApiRequest) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use strum::VariantArray;
+
     use super::*;
-    use crate::input::Method;
+    use crate::input::{Body, Method};
 
     fn validation_error() -> ValidationError {
         ValidationError::OperationNotInSpec {
             path: "/items".into(),
             method: Method::Get,
         }
+    }
+
+    fn test_spec(server_url: String) -> Spec {
+        let raw_spec: oas3::Spec = serde_json::from_value(json!({
+            "openapi": "3.1.0",
+            "info": {
+                "title": "test",
+                "version": "1.0.0"
+            },
+            "servers": [
+                {
+                    "url": server_url
+                }
+            ],
+            "paths": {
+                "/items": {
+                    "get": {
+                        "responses": {
+                            "200": {
+                                "description": "ok"
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("test OpenAPI spec should deserialize");
+
+        Spec::from(raw_spec)
+    }
+
+    fn test_client_parts() -> (
+        Authentication,
+        Arc<reqwest_cookie_store::CookieStoreMutex>,
+        reqwest::blocking::Client,
+    ) {
+        let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(
+            reqwest_cookie_store::CookieStore::default(),
+        ));
+        let client = reqwest::blocking::Client::builder()
+            .cookie_provider(Arc::clone(&cookie_store))
+            .build()
+            .expect("test HTTP client should build");
+
+        (Authentication::None, cookie_store, client)
     }
 
     #[test]
@@ -371,5 +422,43 @@ mod tests {
             identity.crash_kind,
             CrashKind::Validation(ValidationErrorDiscriminants::OperationNotInSpec)
         );
+    }
+
+    #[test]
+    fn replay_input_returns_observed_crash_for_http_500() -> anyhow::Result<()> {
+        let mut server = mockito::Server::new();
+        let _mock = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(500)
+            .with_body(r#"{"error":"boom"}"#)
+            .create();
+
+        let api = test_spec(server.url());
+        let (mut authentication, cookie_store, client) = test_client_parts();
+        let input = OpenApiInput(vec![OpenApiRequest {
+            method: Method::Get,
+            path: "/items".into(),
+            body: Body::Empty,
+            parameters: Default::default(),
+        }]);
+
+        let crash = replay_input_with_client(
+            &input,
+            &api,
+            30_000,
+            ValidationErrorDiscriminants::VARIANTS,
+            &client,
+            &mut authentication,
+            &cookie_store,
+        )?
+        .expect("HTTP 500 should be observed as a crash");
+
+        assert_eq!(crash.crashing_request_index, 0);
+        assert_eq!(crash.identity.crash_kind, CrashKind::Http5xx);
+        assert_eq!(crash.identity.http_status, Some(500));
+        assert_eq!(crash.identity.endpoint.as_deref(), Some("GET /items"));
+        assert_eq!(crash.identity.response_class, ResponseClass::Json);
+
+        Ok(())
     }
 }
