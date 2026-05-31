@@ -44,6 +44,8 @@ use oas3::spec::Server;
 mod authentication;
 mod configuration;
 pub mod coverage_clients;
+mod crash_identity;
+mod crash_replay;
 pub mod executor;
 mod fuzzer;
 pub mod header;
