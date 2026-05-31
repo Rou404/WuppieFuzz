@@ -1,18 +1,75 @@
 #![allow(dead_code)]
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CrashKind {
+    Http5xx,
+    Validation(String),
+    HttpResponseCrash,
+    TransportTimeout,
+    TransportConnectionError,
+    TransportDecodeError,
+    TransportUnknownError,
+}
+
+impl std::fmt::Display for CrashKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http5xx => f.write_str("http_5xx"),
+            Self::Validation(discriminant) => write!(f, "validation_{discriminant}"),
+            Self::HttpResponseCrash => f.write_str("http_response_crash"),
+            Self::TransportTimeout => f.write_str("transport_timeout"),
+            Self::TransportConnectionError => f.write_str("transport_connection_error"),
+            Self::TransportDecodeError => f.write_str("transport_decode_error"),
+            Self::TransportUnknownError => f.write_str("transport_unknown_error"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseClass {
+    Json,
+    Empty,
+    Plaintext,
+    Html,
+    InvalidJson,
+    BinaryOrUnknown,
+    TransportTimeout,
+    TransportConnectionError,
+    TransportDecodeError,
+    TransportUnknownError,
+}
+
+impl std::fmt::Display for ResponseClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Json => "Json",
+            Self::Empty => "Empty",
+            Self::Plaintext => "Plaintext",
+            Self::Html => "Html",
+            Self::InvalidJson => "InvalidJson",
+            Self::BinaryOrUnknown => "BinaryOrUnknown",
+            Self::TransportTimeout => "TransportTimeout",
+            Self::TransportConnectionError => "TransportConnectionError",
+            Self::TransportDecodeError => "TransportDecodeError",
+            Self::TransportUnknownError => "TransportUnknownError",
+        };
+        f.write_str(value)
+    }
+}
+
 /// Coarse identity used to group crashes with similar characteristics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrashIdentity {
     pub exit_kind: String,
-    pub crash_kind: String,
+    pub crash_kind: CrashKind,
     pub http_status: Option<u16>,
     pub validation_error_discriminant: Option<String>,
     pub endpoint: Option<String>,
-    pub response_class: String,
+    pub response_class: ResponseClass,
 }
 
 impl CrashIdentity {
-    /// Returns the exact key used for crash clustering
+    /// Returns the exact key used for crash clustering.
     pub fn cluster_key(&self) -> String {
         format!(
             "{}|{}|{}|{}|{}|{}",
@@ -21,7 +78,7 @@ impl CrashIdentity {
             self.http_status.map(|s| s.to_string()).unwrap_or_default(),
             self.validation_error_discriminant.as_deref().unwrap_or(""),
             self.endpoint.as_deref().unwrap_or(""),
-            self.response_class
+            self.response_class,
         )
     }
 
@@ -59,11 +116,11 @@ mod tests {
     fn identity() -> CrashIdentity {
         CrashIdentity {
             exit_kind: "Crash".into(),
-            crash_kind: "http_5xx".into(),
+            crash_kind: CrashKind::Http5xx,
             http_status: Some(500),
             validation_error_discriminant: None,
             endpoint: Some("POST /users".into()),
-            response_class: "Json".into(),
+            response_class: ResponseClass::Json,
         }
     }
 
@@ -80,10 +137,10 @@ mod tests {
     }
 
     #[test]
-    fn compatible_with_rejects_different_required_signal() {
+    fn compatible_with_rejects_different_crash_kind() {
         let baseline = identity();
         let mut candidate = identity();
-        candidate.response_class = "Html".into();
+        candidate.crash_kind = CrashKind::HttpResponseCrash;
 
         assert!(!baseline.compatible_with(&candidate));
     }
