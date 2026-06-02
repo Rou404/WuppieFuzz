@@ -19,6 +19,8 @@ use crate::{
     openapi::parse_api_spec,
 };
 
+const DEDUP_PROGRESS_INTERVAL: usize = 100;
+
 /// Deduplicates crash files from `crash_directory` into `output_directory`.
 pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path, force: bool) -> Result<()> {
     let output_directory = prepare_output_directory(crash_directory, output_directory, force)?;
@@ -31,41 +33,46 @@ pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path, force: boo
     let mut non_reproducible = Vec::new();
     let mut skipped = Vec::new();
 
-    for crash_file in &crash_files {
+    for (index, crash_file) in crash_files.iter().enumerate() {
         let source_path = relative_string(crash_directory, crash_file);
-        let input = match OpenApiInput::from_file(crash_file) {
-            Ok(input) => input,
+        match OpenApiInput::from_file(crash_file) {
+            Ok(input) => match replay_input(&input, &api, config) {
+                Ok(Some(observed_crash)) => {
+                    add_observed_crash_to_clusters(
+                        &mut clusters,
+                        crash_file,
+                        source_path,
+                        observed_crash,
+                    );
+                }
+                Ok(None) => {
+                    non_reproducible.push(CrashFileResult {
+                        path: source_path,
+                        reason: String::from("Replay did not reproduce a crash"),
+                    });
+                }
+                Err(error) => {
+                    skipped.push(CrashFileResult {
+                        path: source_path,
+                        reason: format!("Could not replay crash input: {error}"),
+                    });
+                }
+            },
             Err(error) => {
                 skipped.push(CrashFileResult {
                     path: source_path,
                     reason: format!("Could not read crash input: {error}"),
                 });
-                continue;
             }
         };
 
-        match replay_input(&input, &api, config) {
-            Ok(Some(observed_crash)) => {
-                add_observed_crash_to_clusters(
-                    &mut clusters,
-                    crash_file,
-                    source_path,
-                    observed_crash,
-                );
-            }
-            Ok(None) => {
-                non_reproducible.push(CrashFileResult {
-                    path: source_path,
-                    reason: String::from("Replay did not reproduce a crash"),
-                });
-            }
-            Err(error) => {
-                skipped.push(CrashFileResult {
-                    path: source_path,
-                    reason: format!("Could not replay crash input: {error}"),
-                });
-            }
-        }
+        log_progress(
+            index + 1,
+            crash_files.len(),
+            clusters.len(),
+            non_reproducible.len(),
+            skipped.len(),
+        );
     }
 
     copy_unique_representatives(&output_directory, &mut clusters)?;
@@ -337,6 +344,24 @@ fn write_report(output_directory: &Path, report: &DedupReport) -> Result<()> {
         .with_context(|| format!("Writing dedup report {}", report_path.display()))?;
 
     Ok(())
+}
+
+fn log_progress(
+    processed: usize,
+    total: usize,
+    unique_clusters: usize,
+    non_reproducible: usize,
+    skipped: usize,
+) {
+    if should_log_progress(processed, total) {
+        log::info!(
+            "Dedup progress: {processed}/{total} crash files processed, {unique_clusters} unique clusters, {non_reproducible} non-reproducible, {skipped} skipped"
+        );
+    }
+}
+
+fn should_log_progress(processed: usize, total: usize) -> bool {
+    processed < total && processed % DEDUP_PROGRESS_INTERVAL == 0
 }
 
 fn log_summary(summary: &DedupSummary, output_directory: &Path) {
