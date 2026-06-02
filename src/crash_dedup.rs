@@ -37,14 +37,23 @@ pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path, force: boo
         let source_path = relative_string(crash_directory, crash_file);
         match OpenApiInput::from_file(crash_file) {
             Ok(input) => match replay_input(&input, &api, config) {
-                Ok(Some(observed_crash)) => {
-                    add_observed_crash_to_clusters(
-                        &mut clusters,
-                        crash_file,
-                        source_path,
-                        observed_crash,
-                    );
-                }
+                Ok(Some(observed_crash)) => match fs::metadata(crash_file) {
+                    Ok(metadata) => {
+                        add_observed_crash_to_clusters(
+                            &mut clusters,
+                            crash_file,
+                            source_path,
+                            metadata.len(),
+                            observed_crash,
+                        );
+                    }
+                    Err(error) => {
+                        skipped.push(CrashFileResult {
+                            path: source_path,
+                            reason: format!("Could not read crash input metadata: {error}"),
+                        });
+                    }
+                },
                 Ok(None) => {
                     non_reproducible.push(CrashFileResult {
                         path: source_path,
@@ -130,6 +139,8 @@ struct CrashCluster {
     key: String,
     #[serde(skip)]
     representative_source: PathBuf,
+    #[serde(skip)]
+    representative_size: u64,
     representative: String,
     members: Vec<String>,
     member_count: usize,
@@ -268,13 +279,21 @@ fn add_observed_crash_to_clusters(
     clusters: &mut BTreeMap<String, CrashCluster>,
     source_file: &Path,
     source_path: String,
+    source_size: u64,
     observed_crash: ObservedCrash,
 ) {
     let key = observed_crash.identity.cluster_key();
     match clusters.get_mut(&key) {
         Some(cluster) => {
-            cluster.members.push(source_path);
+            cluster.members.push(source_path.clone());
             cluster.member_count = cluster.members.len();
+            if source_size < cluster.representative_size {
+                cluster.representative_source = source_file.to_path_buf();
+                cluster.representative_size = source_size;
+                cluster.representative = source_path;
+                cluster.representative_crashing_request_index =
+                    observed_crash.crashing_request_index;
+            }
         }
         None => {
             clusters.insert(
@@ -282,6 +301,7 @@ fn add_observed_crash_to_clusters(
                 CrashCluster {
                     key,
                     representative_source: source_file.to_path_buf(),
+                    representative_size: source_size,
                     representative: source_path.clone(),
                     members: vec![source_path],
                     member_count: 1,
@@ -475,12 +495,14 @@ mod tests {
             &mut clusters,
             Path::new("first"),
             String::from("first"),
+            10,
             first,
         );
         add_observed_crash_to_clusters(
             &mut clusters,
             Path::new("second"),
             String::from("second"),
+            10,
             duplicate,
         );
 
@@ -492,6 +514,35 @@ mod tests {
     }
 
     #[test]
+    fn add_observed_crash_prefers_smaller_representative() {
+        let mut clusters = BTreeMap::new();
+        let first = observed_crash_with_index("GET /items", 2);
+        let smaller = observed_crash_with_index("GET /items", 1);
+
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            Path::new("larger"),
+            String::from("larger"),
+            100,
+            first,
+        );
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            Path::new("smaller"),
+            String::from("smaller"),
+            10,
+            smaller,
+        );
+
+        let cluster = clusters.values().next().unwrap();
+        assert_eq!(cluster.representative, "smaller");
+        assert_eq!(cluster.representative_source, PathBuf::from("smaller"));
+        assert_eq!(cluster.representative_size, 10);
+        assert_eq!(cluster.representative_crashing_request_index, 1);
+        assert_eq!(cluster.members, vec!["larger", "smaller"]);
+    }
+
+    #[test]
     fn add_observed_crash_splits_distinct_cluster_keys() {
         let mut clusters = BTreeMap::new();
 
@@ -499,12 +550,14 @@ mod tests {
             &mut clusters,
             Path::new("first"),
             String::from("first"),
+            10,
             observed_crash("GET /items"),
         );
         add_observed_crash_to_clusters(
             &mut clusters,
             Path::new("second"),
             String::from("second"),
+            10,
             observed_crash("POST /items"),
         );
 
@@ -529,12 +582,14 @@ mod tests {
             &mut clusters,
             &first_crash,
             String::from("same-name"),
+            first_crash.metadata()?.len(),
             observed_crash("GET /items"),
         );
         add_observed_crash_to_clusters(
             &mut clusters,
             &second_crash,
             String::from("nested/same-name"),
+            second_crash.metadata()?.len(),
             observed_crash("POST /items"),
         );
 
@@ -561,6 +616,10 @@ mod tests {
     }
 
     fn observed_crash(endpoint: &str) -> ObservedCrash {
+        observed_crash_with_index(endpoint, 0)
+    }
+
+    fn observed_crash_with_index(endpoint: &str, crashing_request_index: usize) -> ObservedCrash {
         ObservedCrash {
             identity: CrashIdentity {
                 exit_kind: ObservedExitKind::Crash,
@@ -570,7 +629,7 @@ mod tests {
                 endpoint: Some(endpoint.to_string()),
                 response_class: ResponseClass::Json,
             },
-            crashing_request_index: 0,
+            crashing_request_index,
         }
     }
 
