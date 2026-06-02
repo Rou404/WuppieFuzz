@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use libafl::inputs::Input;
 use serde::Serialize;
 use walkdir::WalkDir;
@@ -14,13 +14,14 @@ use walkdir::WalkDir;
 use crate::{
     configuration::Configuration,
     crash_identity::CrashIdentity,
-    crash_replay::{replay_input, ObservedCrash},
+    crash_replay::{ObservedCrash, replay_input},
     input::OpenApiInput,
     openapi::parse_api_spec,
 };
 
 /// Deduplicates crash files from `crash_directory` into `output_directory`.
-pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path) -> Result<()> {
+pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path, force: bool) -> Result<()> {
+    let output_directory = prepare_output_directory(crash_directory, output_directory, force)?;
     let config = Configuration::get().map_err(anyhow::Error::msg)?;
     crate::setup_logging(config);
 
@@ -67,12 +68,12 @@ pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path) -> Result<
         }
     }
 
-    copy_unique_representatives(output_directory, &mut clusters)?;
+    copy_unique_representatives(&output_directory, &mut clusters)?;
 
-    write_report(
-        output_directory,
-        DedupReport::new(crash_files.len(), clusters, non_reproducible, skipped),
-    )
+    let report = DedupReport::new(crash_files.len(), clusters, non_reproducible, skipped);
+    write_report(&output_directory, &report)?;
+    log_summary(&report.summary, &output_directory);
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -158,19 +159,60 @@ struct CrashFileResult {
     reason: String,
 }
 
+fn prepare_output_directory(
+    crash_directory: &Path,
+    output_directory: &Path,
+    force: bool,
+) -> Result<PathBuf> {
+    ensure_crash_directory(crash_directory)?;
+
+    let crash_directory = std::path::absolute(crash_directory)?;
+    let output_directory = std::path::absolute(output_directory)?;
+    if output_directory.starts_with(&crash_directory) {
+        return Err(anyhow!(
+            "Output directory {} must not be inside or equal to crash directory {} because crash collection is recursive",
+            output_directory.display(),
+            crash_directory.display()
+        ));
+    }
+    if output_directory.exists() && !output_directory.is_dir() {
+        return Err(anyhow!(
+            "Output path {} exists but is not a directory",
+            output_directory.display()
+        ));
+    }
+    if output_directory.exists() && !force && !is_empty_directory(&output_directory)? {
+        return Err(anyhow!(
+            "Output directory {} already exists and is not empty; use --force to overwrite previous dedup output",
+            output_directory.display()
+        ));
+    }
+
+    fs::create_dir_all(&output_directory)?;
+    if force {
+        remove_if_exists(&output_directory.join("clusters.json"))?;
+        remove_if_exists(&output_directory.join("unique"))?;
+    }
+
+    Ok(output_directory)
+}
+
+fn is_empty_directory(directory: &Path) -> Result<bool> {
+    let mut entries = fs::read_dir(directory)?;
+    Ok(entries.next().transpose()?.is_none())
+}
+
+fn remove_if_exists(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else if path.exists() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
 fn get_crash_files(crash_directory: &Path) -> Result<Vec<PathBuf>> {
-    if !crash_directory.exists() {
-        return Err(anyhow!(
-            "Crash directory {} does not exist",
-            crash_directory.display()
-        ));
-    }
-    if !crash_directory.is_dir() {
-        return Err(anyhow!(
-            "Crash path {} is not a directory",
-            crash_directory.display()
-        ));
-    }
+    ensure_crash_directory(crash_directory)?;
 
     let mut files = Vec::new();
     for entry in WalkDir::new(crash_directory).min_depth(1) {
@@ -188,6 +230,23 @@ fn get_crash_files(crash_directory: &Path) -> Result<Vec<PathBuf>> {
 
     files.sort();
     Ok(files)
+}
+
+fn ensure_crash_directory(crash_directory: &Path) -> Result<()> {
+    if !crash_directory.exists() {
+        return Err(anyhow!(
+            "Crash directory {} does not exist",
+            crash_directory.display()
+        ));
+    }
+    if !crash_directory.is_dir() {
+        return Err(anyhow!(
+            "Crash path {} is not a directory",
+            crash_directory.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn is_crash_input_file(path: &Path) -> bool {
@@ -263,7 +322,7 @@ fn unique_file_name(index: usize, source_path: &Path) -> String {
     format!("{index:06}_{file_name}")
 }
 
-fn write_report(output_directory: &Path, report: DedupReport) -> Result<()> {
+fn write_report(output_directory: &Path, report: &DedupReport) -> Result<()> {
     fs::create_dir_all(output_directory).with_context(|| {
         format!(
             "Creating dedup output directory {}",
@@ -278,6 +337,18 @@ fn write_report(output_directory: &Path, report: DedupReport) -> Result<()> {
         .with_context(|| format!("Writing dedup report {}", report_path.display()))?;
 
     Ok(())
+}
+
+fn log_summary(summary: &DedupSummary, output_directory: &Path) {
+    log::info!(
+        "Dedup processed {} crash files: {} reproduced, {} unique clusters, {} non-reproducible, {} skipped. Output: {}",
+        summary.total_files,
+        summary.reproduced,
+        summary.unique_clusters,
+        summary.non_reproducible,
+        summary.skipped,
+        output_directory.display()
+    );
 }
 
 fn relative_string(base: &Path, path: &Path) -> String {
@@ -323,6 +394,49 @@ mod tests {
             files,
             vec![nested.join("a-crash"), temp_dir.path().join("z-crash")]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_output_directory_rejects_unsafe_outputs() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let crash_dir = temp_dir.path().join("crashes");
+        let output_dir = temp_dir.path().join("dedup");
+        fs::create_dir(&crash_dir)?;
+        fs::create_dir(&output_dir)?;
+        fs::write(output_dir.join("old-file"), b"old")?;
+
+        let nested_error =
+            prepare_output_directory(&crash_dir, &crash_dir.join("dedup"), false).unwrap_err();
+        assert_error_contains(
+            nested_error,
+            "must not be inside or equal to crash directory",
+        );
+
+        let non_empty_error = prepare_output_directory(&crash_dir, &output_dir, false).unwrap_err();
+        assert_error_contains(non_empty_error, "already exists and is not empty");
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_output_directory_force_removes_stale_outputs() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let crash_dir = temp_dir.path().join("crashes");
+        let output_dir = temp_dir.path().join("dedup");
+        fs::create_dir(&crash_dir)?;
+        fs::create_dir(&output_dir)?;
+        fs::write(output_dir.join("clusters.json"), b"old report")?;
+        fs::create_dir(output_dir.join("unique"))?;
+        fs::write(output_dir.join("unique/stale-crash"), b"old crash")?;
+        fs::write(output_dir.join("notes.txt"), b"keep")?;
+
+        let prepared = prepare_output_directory(&crash_dir, &output_dir, true)?;
+
+        assert_eq!(prepared, output_dir);
+        assert!(!prepared.join("clusters.json").exists());
+        assert!(!prepared.join("unique").exists());
+        assert!(prepared.join("notes.txt").exists());
+        assert!(prepared.is_dir());
         Ok(())
     }
 
@@ -433,5 +547,9 @@ mod tests {
             },
             crashing_request_index: 0,
         }
+    }
+
+    fn assert_error_contains(error: anyhow::Error, expected: &str) {
+        assert!(error.to_string().contains(expected));
     }
 }

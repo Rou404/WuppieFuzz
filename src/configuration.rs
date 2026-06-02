@@ -138,6 +138,9 @@ pub enum Commands {
         /// The directory to write deduplication output to
         #[arg(long, value_parser, value_name = "OUTPUT_DIRECTORY")]
         output: PathBuf,
+        /// Overwrite previous deduplication output artifacts.
+        #[arg(long)]
+        force: bool,
         /// The OpenAPI specification of the program under test
         #[arg(long, value_name = "OPENAPI_SPEC.YAML")]
         openapi_spec: Option<PathBuf>,

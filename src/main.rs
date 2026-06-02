@@ -111,8 +111,9 @@ pub fn main() -> Result<()> {
         Commands::Dedup {
             crash_directory,
             output,
+            force,
             ..
-        } => crash_dedup::dedup_crashes(crash_directory, output),
+        } => crash_dedup::dedup_crashes(crash_directory, output, *force),
         Commands::Fuzz { .. } => fuzzer::fuzz(),
     }
 }
