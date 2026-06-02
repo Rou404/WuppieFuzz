@@ -45,7 +45,12 @@ pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path) -> Result<
 
         match replay_input(&input, &api, config) {
             Ok(Some(observed_crash)) => {
-                add_observed_crash_to_clusters(&mut clusters, source_path, observed_crash);
+                add_observed_crash_to_clusters(
+                    &mut clusters,
+                    crash_file,
+                    source_path,
+                    observed_crash,
+                );
             }
             Ok(None) => {
                 non_reproducible.push(CrashFileResult {
@@ -61,6 +66,8 @@ pub fn dedup_crashes(crash_directory: &Path, output_directory: &Path) -> Result<
             }
         }
     }
+
+    copy_unique_representatives(output_directory, &mut clusters)?;
 
     write_report(
         output_directory,
@@ -113,6 +120,8 @@ struct DedupSummary {
 #[derive(Debug, Serialize)]
 struct CrashCluster {
     key: String,
+    #[serde(skip)]
+    representative_source: PathBuf,
     representative: String,
     members: Vec<String>,
     member_count: usize,
@@ -191,6 +200,7 @@ fn is_crash_input_file(path: &Path) -> bool {
 
 fn add_observed_crash_to_clusters(
     clusters: &mut BTreeMap<String, CrashCluster>,
+    source_file: &Path,
     source_path: String,
     observed_crash: ObservedCrash,
 ) {
@@ -205,6 +215,7 @@ fn add_observed_crash_to_clusters(
                 key.clone(),
                 CrashCluster {
                     key,
+                    representative_source: source_file.to_path_buf(),
                     representative: source_path.clone(),
                     members: vec![source_path],
                     member_count: 1,
@@ -214,6 +225,42 @@ fn add_observed_crash_to_clusters(
             );
         }
     }
+}
+
+fn copy_unique_representatives(
+    output_directory: &Path,
+    clusters: &mut BTreeMap<String, CrashCluster>,
+) -> Result<()> {
+    let unique_directory = output_directory.join("unique");
+    fs::create_dir_all(&unique_directory).with_context(|| {
+        format!(
+            "Creating dedup unique crash directory {}",
+            unique_directory.display()
+        )
+    })?;
+
+    for (index, cluster) in clusters.values_mut().enumerate() {
+        let destination =
+            unique_directory.join(unique_file_name(index, &cluster.representative_source));
+        fs::copy(&cluster.representative_source, &destination).with_context(|| {
+            format!(
+                "Copying representative crash {} to {}",
+                cluster.representative_source.display(),
+                destination.display()
+            )
+        })?;
+        cluster.representative = relative_string(output_directory, &destination);
+    }
+
+    Ok(())
+}
+
+fn unique_file_name(index: usize, source_path: &Path) -> String {
+    let file_name = source_path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .unwrap_or("crash");
+    format!("{index:06}_{file_name}")
 }
 
 fn write_report(output_directory: &Path, report: DedupReport) -> Result<()> {
@@ -285,8 +332,18 @@ mod tests {
         let first = observed_crash("GET /items");
         let duplicate = observed_crash("GET /items");
 
-        add_observed_crash_to_clusters(&mut clusters, String::from("first"), first);
-        add_observed_crash_to_clusters(&mut clusters, String::from("second"), duplicate);
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            Path::new("first"),
+            String::from("first"),
+            first,
+        );
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            Path::new("second"),
+            String::from("second"),
+            duplicate,
+        );
 
         assert_eq!(clusters.len(), 1);
         let cluster = clusters.values().next().unwrap();
@@ -301,16 +358,67 @@ mod tests {
 
         add_observed_crash_to_clusters(
             &mut clusters,
+            Path::new("first"),
             String::from("first"),
             observed_crash("GET /items"),
         );
         add_observed_crash_to_clusters(
             &mut clusters,
+            Path::new("second"),
             String::from("second"),
             observed_crash("POST /items"),
         );
 
         assert_eq!(clusters.len(), 2);
+    }
+
+    #[test]
+    fn copy_unique_representatives_copies_files_and_updates_representative_paths() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let crash_dir = temp_dir.path().join("crashes");
+        let output_dir = temp_dir.path().join("dedup");
+        fs::create_dir(&crash_dir)?;
+        let first_crash = crash_dir.join("same-name");
+        let nested_dir = crash_dir.join("nested");
+        fs::create_dir(&nested_dir)?;
+        let second_crash = nested_dir.join("same-name");
+        fs::write(&first_crash, b"first")?;
+        fs::write(&second_crash, b"second")?;
+
+        let mut clusters = BTreeMap::new();
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            &first_crash,
+            String::from("same-name"),
+            observed_crash("GET /items"),
+        );
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            &second_crash,
+            String::from("nested/same-name"),
+            observed_crash("POST /items"),
+        );
+
+        copy_unique_representatives(&output_dir, &mut clusters)?;
+
+        let representatives: Vec<_> = clusters
+            .values()
+            .map(|cluster| cluster.representative.as_str())
+            .collect();
+        assert_eq!(
+            representatives,
+            vec!["unique/000000_same-name", "unique/000001_same-name"]
+        );
+        assert_eq!(
+            fs::read(output_dir.join("unique/000000_same-name"))?,
+            b"first"
+        );
+        assert_eq!(
+            fs::read(output_dir.join("unique/000001_same-name"))?,
+            b"second"
+        );
+
+        Ok(())
     }
 
     fn observed_crash(endpoint: &str) -> ObservedCrash {
