@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+//TODO : Remove dead_code for next PR if possible
 
 use crate::openapi::validate_response::ValidationErrorDiscriminants;
 
