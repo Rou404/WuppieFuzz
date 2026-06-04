@@ -23,10 +23,16 @@ use crate::{
     parameter_feedback::ParameterFeedback,
 };
 
+/// Benchmark-only oracle label used for post-hoc evaluation.
+///
+/// This value is not used for fuzzing feedback, crash detection, or clustering.
+const BENCHMARK_ORACLE_CRASH_ID_HEADER: &str = "X-Benchmark-Crash-ID";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservedCrash {
     pub identity: CrashIdentity,
     pub crashing_request_index: usize,
+    pub oracle_crash_id: Option<String>,
 }
 fn coarse_response_class(response: &Response) -> ResponseClass {
     // This uses WuppieFuzz's buffered Response wrapper, so reading JSON/text here
@@ -236,6 +242,7 @@ fn replay_request(
                         response_class,
                     ),
                     crashing_request_index: request_index,
+                    oracle_crash_id: oracle_crash_id_from_response(&response),
                 }))
             } else {
                 Ok(ReplayStep::Continue)
@@ -244,6 +251,7 @@ fn replay_request(
         Err(error) => Ok(ReplayStep::Crash(ObservedCrash {
             identity: observed_transport_identity(&error, Some(endpoint_string(&request))),
             crashing_request_index: request_index,
+            oracle_crash_id: None,
         })),
     }
 }
@@ -283,6 +291,13 @@ fn observed_transport_identity(error: &reqwest::Error, endpoint: Option<String>)
         endpoint,
         response_class: transport_response_class(error),
     }
+}
+
+fn oracle_crash_id_from_response(response: &Response) -> Option<String> {
+    response
+        .header_value(BENCHMARK_ORACLE_CRASH_ID_HEADER)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn endpoint_string(request: &OpenApiRequest) -> String {

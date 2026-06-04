@@ -144,6 +144,8 @@ struct CrashCluster {
     representative: String,
     members: Vec<String>,
     member_count: usize,
+    oracle_crash_ids: Vec<String>,
+    oracle_mixed: bool,
     representative_crashing_request_index: usize,
     identity: SerializableCrashIdentity,
 }
@@ -287,6 +289,7 @@ fn add_observed_crash_to_clusters(
         Some(cluster) => {
             cluster.members.push(source_path.clone());
             cluster.member_count = cluster.members.len();
+            record_oracle_crash_id(cluster, observed_crash.oracle_crash_id.as_deref());
             if source_size < cluster.representative_size {
                 cluster.representative_source = source_file.to_path_buf();
                 cluster.representative_size = source_size;
@@ -296,21 +299,41 @@ fn add_observed_crash_to_clusters(
             }
         }
         None => {
-            clusters.insert(
-                key.clone(),
-                CrashCluster {
-                    key,
-                    representative_source: source_file.to_path_buf(),
-                    representative_size: source_size,
-                    representative: source_path.clone(),
-                    members: vec![source_path],
-                    member_count: 1,
-                    representative_crashing_request_index: observed_crash.crashing_request_index,
-                    identity: SerializableCrashIdentity::from(&observed_crash.identity),
-                },
-            );
+            let mut cluster = CrashCluster {
+                key: key.clone(),
+                representative_source: source_file.to_path_buf(),
+                representative_size: source_size,
+                representative: source_path.clone(),
+                members: vec![source_path],
+                member_count: 1,
+                oracle_crash_ids: Vec::new(),
+                oracle_mixed: false,
+                representative_crashing_request_index: observed_crash.crashing_request_index,
+                identity: SerializableCrashIdentity::from(&observed_crash.identity),
+            };
+            record_oracle_crash_id(&mut cluster, observed_crash.oracle_crash_id.as_deref());
+            clusters.insert(key, cluster);
         }
     }
+}
+
+fn record_oracle_crash_id(cluster: &mut CrashCluster, oracle_crash_id: Option<&str>) {
+    let Some(oracle_crash_id) = oracle_crash_id
+        .map(str::trim)
+        .filter(|oracle_crash_id| !oracle_crash_id.is_empty())
+    else {
+        return;
+    };
+
+    if !cluster
+        .oracle_crash_ids
+        .iter()
+        .any(|existing| existing == oracle_crash_id)
+    {
+        cluster.oracle_crash_ids.push(oracle_crash_id.to_owned());
+        cluster.oracle_crash_ids.sort();
+    }
+    cluster.oracle_mixed = cluster.oracle_crash_ids.len() > 1;
 }
 
 fn copy_unique_representatives(
@@ -488,8 +511,8 @@ mod tests {
     #[test]
     fn add_observed_crash_groups_by_cluster_key() {
         let mut clusters = BTreeMap::new();
-        let first = observed_crash("GET /items");
-        let duplicate = observed_crash("GET /items");
+        let first = observed_crash_with_oracle("GET /items", "BUG-001");
+        let duplicate = observed_crash_with_oracle("GET /items", "BUG-002");
 
         add_observed_crash_to_clusters(
             &mut clusters,
@@ -511,6 +534,8 @@ mod tests {
         assert_eq!(cluster.representative, "first");
         assert_eq!(cluster.member_count, 2);
         assert_eq!(cluster.members, vec!["first", "second"]);
+        assert_eq!(cluster.oracle_crash_ids, vec!["BUG-001", "BUG-002"]);
+        assert!(cluster.oracle_mixed);
     }
 
     #[test]
@@ -619,6 +644,13 @@ mod tests {
         observed_crash_with_index(endpoint, 0)
     }
 
+    fn observed_crash_with_oracle(endpoint: &str, oracle_crash_id: &str) -> ObservedCrash {
+        ObservedCrash {
+            oracle_crash_id: Some(oracle_crash_id.to_string()),
+            ..observed_crash_with_index(endpoint, 0)
+        }
+    }
+
     fn observed_crash_with_index(endpoint: &str, crashing_request_index: usize) -> ObservedCrash {
         ObservedCrash {
             identity: CrashIdentity {
@@ -630,6 +662,7 @@ mod tests {
                 response_class: ResponseClass::Json,
             },
             crashing_request_index,
+            oracle_crash_id: None,
         }
     }
 

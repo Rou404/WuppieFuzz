@@ -4,7 +4,7 @@ use anyhow::Result;
 use oas3::spec::{
     BooleanSchema, ObjectOrReference, ObjectSchema, Schema, SchemaType, SchemaTypeSet,
 };
-use reqwest::StatusCode;
+use reqwest::{StatusCode, header::HeaderMap};
 use serde::Deserialize;
 use serde_json::Value;
 use strum::{EnumDiscriminants, EnumString, VariantArray};
@@ -24,6 +24,7 @@ use crate::{
 #[derive(Clone)]
 pub struct Response {
     status: reqwest::StatusCode,
+    headers: HeaderMap,
     cookies: Vec<(String, String)>,
     body: Vec<u8>,
 }
@@ -31,6 +32,13 @@ pub struct Response {
 impl Response {
     pub fn status(&self) -> reqwest::StatusCode {
         self.status
+    }
+
+    pub fn header_value(&self, header_name: &str) -> Option<String> {
+        self.headers
+            .get(header_name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
     }
 
     /// This returns the length of the decompressed contents, even if no content-length
@@ -52,16 +60,22 @@ impl Response {
 
 impl From<reqwest::blocking::Response> for Response {
     fn from(resp: reqwest::blocking::Response) -> Self {
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let cookies = resp
+            .cookies()
+            .map(|c| (c.name().to_owned(), c.value().to_owned()))
+            .collect();
+        let body = resp
+            .bytes()
+            .map(|b| b.into_iter().collect())
+            .unwrap_or_default();
+
         Self {
-            status: resp.status(),
-            cookies: resp
-                .cookies()
-                .map(|c| (c.name().to_owned(), c.value().to_owned()))
-                .collect(),
-            body: resp
-                .bytes()
-                .map(|b| b.into_iter().collect())
-                .unwrap_or_default(),
+            status,
+            headers,
+            cookies,
+            body,
         }
     }
 }
