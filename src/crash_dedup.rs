@@ -145,6 +145,7 @@ struct CrashCluster {
     members: Vec<String>,
     member_count: usize,
     oracle_crash_ids: Vec<String>,
+    oracle_crash_id_counts: BTreeMap<String, usize>,
     oracle_mixed: bool,
     representative_crashing_request_index: usize,
     identity: SerializableCrashIdentity,
@@ -307,6 +308,7 @@ fn add_observed_crash_to_clusters(
                 members: vec![source_path],
                 member_count: 1,
                 oracle_crash_ids: Vec::new(),
+                oracle_crash_id_counts: BTreeMap::new(),
                 oracle_mixed: false,
                 representative_crashing_request_index: observed_crash.crashing_request_index,
                 identity: SerializableCrashIdentity::from(&observed_crash.identity),
@@ -325,15 +327,12 @@ fn record_oracle_crash_id(cluster: &mut CrashCluster, oracle_crash_id: Option<&s
         return;
     };
 
-    if !cluster
-        .oracle_crash_ids
-        .iter()
-        .any(|existing| existing == oracle_crash_id)
-    {
-        cluster.oracle_crash_ids.push(oracle_crash_id.to_owned());
-        cluster.oracle_crash_ids.sort();
-    }
-    cluster.oracle_mixed = cluster.oracle_crash_ids.len() > 1;
+    *cluster
+        .oracle_crash_id_counts
+        .entry(oracle_crash_id.to_owned())
+        .or_insert(0) += 1;
+    cluster.oracle_crash_ids = cluster.oracle_crash_id_counts.keys().cloned().collect();
+    cluster.oracle_mixed = cluster.oracle_crash_id_counts.len() > 1;
 }
 
 fn copy_unique_representatives(
@@ -513,6 +512,7 @@ mod tests {
         let mut clusters = BTreeMap::new();
         let first = observed_crash_with_oracle("GET /items", "BUG-001");
         let duplicate = observed_crash_with_oracle("GET /items", "BUG-002");
+        let repeated = observed_crash_with_oracle("GET /items", "BUG-001");
 
         add_observed_crash_to_clusters(
             &mut clusters,
@@ -528,13 +528,22 @@ mod tests {
             10,
             duplicate,
         );
+        add_observed_crash_to_clusters(
+            &mut clusters,
+            Path::new("third"),
+            String::from("third"),
+            10,
+            repeated,
+        );
 
         assert_eq!(clusters.len(), 1);
         let cluster = clusters.values().next().unwrap();
         assert_eq!(cluster.representative, "first");
-        assert_eq!(cluster.member_count, 2);
-        assert_eq!(cluster.members, vec!["first", "second"]);
+        assert_eq!(cluster.member_count, 3);
+        assert_eq!(cluster.members, vec!["first", "second", "third"]);
         assert_eq!(cluster.oracle_crash_ids, vec!["BUG-001", "BUG-002"]);
+        assert_eq!(cluster.oracle_crash_id_counts.get("BUG-001"), Some(&2));
+        assert_eq!(cluster.oracle_crash_id_counts.get("BUG-002"), Some(&1));
         assert!(cluster.oracle_mixed);
     }
 
