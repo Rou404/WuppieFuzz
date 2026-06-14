@@ -1,0 +1,7 @@
+- method: GET
+  path: /search
+  parameters:
+    ? - q
+      - Query
+    : !String crash
+  body: !Empty

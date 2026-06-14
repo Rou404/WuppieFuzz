@@ -1,0 +1,6 @@
+- method: POST
+  path: /reports/generate
+  parameters: {}
+  body: !ApplicationJson
+    report_type: !String financial_audit
+    include_pii: !Bool false

@@ -19,3 +19,13 @@ reports/
 jacoco_report.exec
 endpointcoverage/
 version.hash
+
+# Local benchmark environments and generated outputs
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.coverage
+/benchmark_runs/
+/benchmark-*.log
+/crash_dedup/
+/results.json

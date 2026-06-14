@@ -1,0 +1,10 @@
+- method: GET
+  path: /render
+  parameters:
+    ? - template
+      - Query
+    : !String crash
+    ? - format
+      - Query
+    : !String html
+  body: !Empty

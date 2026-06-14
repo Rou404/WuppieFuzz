@@ -1,0 +1,921 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "WuppieFuzz Deduplication Benchmark",
+    "description": "Synthetic benchmark app for evaluating crash deduplication quality. Intentional crashes carry X-Benchmark-Crash-ID; normal responses do not.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/math/divide": {
+      "get": {
+        "tags": [
+          "A – Simple distinct bugs"
+        ],
+        "summary": "Divide two integers",
+        "description": "BUG-001 — divide-by-zero style crash.\nTriggered when denominator == 0.\nSimple, isolated bug; expected to form a clean singleton cluster.",
+        "operationId": "math_divide_math_divide_get",
+        "parameters": [
+          {
+            "name": "numerator",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Dividend",
+              "title": "Numerator"
+            },
+            "description": "Dividend"
+          },
+          {
+            "name": "denominator",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Divisor",
+              "title": "Denominator"
+            },
+            "description": "Divisor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Math Divide Math Divide Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}": {
+      "get": {
+        "tags": [
+          "A – Simple distinct bugs"
+        ],
+        "summary": "Fetch a user by ID",
+        "description": "BUG-002 — negative user ID crash.\nTriggered when user_id < 0.\nDifferent endpoint, different trigger condition from BUG-001.",
+        "operationId": "get_user_users__user_id__get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "User ID (must be positive)",
+              "title": "User Id"
+            },
+            "description": "User ID (must be positive)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get User Users  User Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "tags": [
+          "B – Duplicate-heavy same root cause"
+        ],
+        "summary": "Search for items",
+        "description": "BUG-003 — search engine crash on several distinct trigger words.\nMultiple different query strings all map to the same underlying bug.\nA good deduplicator should merge all of these into one BUG-003 cluster.\nA poor deduplicator might create one cluster per unique query string.",
+        "operationId": "search_search_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Search query string",
+              "title": "Q"
+            },
+            "description": "Search query string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Search Search Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/parser": {
+      "post": {
+        "tags": [
+          "C – False-merge challenge"
+        ],
+        "summary": "Parse structured content",
+        "description": "BUG-004 — JSON parser internal crash (triggered when format=='json' and\n           content contains '{{crash}}').\nBUG-005 — XML parser internal crash  (triggered when format=='xml' and\n           content contains '<crash/>').\n\nBoth return HTTP 500 JSON from the same endpoint.\nA coarse deduplicator sees: (exit=crash, kind=500, class=json, endpoint=POST /parser)\nand will MERGE them into one cluster — a false merge.",
+        "operationId": "parse_content_parser_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Parse Content Parser Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cache/read": {
+      "get": {
+        "tags": [
+          "D – False-split by endpoint"
+        ],
+        "summary": "Read from the cache",
+        "description": "BUG-006 (reachable here) — shared cache corruption bug.\nTrigger: ?corrupt=true\nSame true bug as reachable from /cache/export.",
+        "operationId": "cache_read_cache_read_get",
+        "parameters": [
+          {
+            "name": "corrupt",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Simulate cache corruption",
+              "default": false,
+              "title": "Corrupt"
+            },
+            "description": "Simulate cache corruption"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cache Read Cache Read Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cache/export": {
+      "get": {
+        "tags": [
+          "D – False-split by endpoint"
+        ],
+        "summary": "Export the cache to a snapshot",
+        "description": "BUG-006 (reachable here) — same shared cache corruption bug.\nTrigger: ?corrupt=true\nA fuzzer that finds this path gets a different endpoint in the dedup key,\ncausing the deduplicator to create a second cluster for what is really BUG-006.",
+        "operationId": "cache_export_cache_export_get",
+        "parameters": [
+          {
+            "name": "corrupt",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Simulate cache corruption",
+              "default": false,
+              "title": "Corrupt"
+            },
+            "description": "Simulate cache corruption"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cache Export Cache Export Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/render": {
+      "get": {
+        "tags": [
+          "E – False-split by response class"
+        ],
+        "summary": "Render a template",
+        "description": "BUG-007 — template rendering crash on template=='crash'.\nThe response class (json/text/html) is determined by the ?format= parameter.\nA coarse deduplicator splits this into up to three clusters — one per response\nclass — even though a single bug causes all of them.",
+        "operationId": "render_template_render_get",
+        "parameters": [
+          {
+            "name": "template",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Template name to render",
+              "title": "Template"
+            },
+            "description": "Template name to render"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Response format: json | text | html",
+              "default": "json",
+              "title": "Format"
+            },
+            "description": "Response format: json | text | html"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/legacy": {
+      "get": {
+        "tags": [
+          "F – False-split by status code"
+        ],
+        "summary": "Legacy compatibility endpoint",
+        "description": "BUG-008 — legacy compatibility layer crash.\nmode='v1' → HTTP 500, mode='v2' → HTTP 502.\nSame root cause, but different status codes in the response.\nA deduplicator that keys on status code will SPLIT this into two clusters.",
+        "operationId": "legacy_legacy_get",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Compatibility mode: v1 (→500) or v2 (→502)",
+              "default": "v1",
+              "title": "Mode"
+            },
+            "description": "Compatibility mode: v1 (→500) or v2 (→502)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Legacy Legacy Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/strict/{item_id}": {
+      "get": {
+        "tags": [
+          "G – Validation-style bug"
+        ],
+        "summary": "Strict item lookup",
+        "description": "BUG-009 — returns HTTP 400 with oracle header for item_id == 0.\nThe OpenAPI spec documents a normal success response; a fuzzer configured to\ntreat unexpected 400s as validation-style crashes should flag this.\nThis tests whether the deduplicator handles non-5xx crashes correctly.",
+        "operationId": "strict_item_strict__item_id__get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Item ID (0 triggers BUG-009)",
+              "title": "Item Id"
+            },
+            "description": "Item ID (0 triggers BUG-009)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Strict Item Strict  Item Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tokens": {
+      "post": {
+        "tags": [
+          "H – Stateful sequence bug"
+        ],
+        "summary": "Create / register a token",
+        "description": "Step 1 of the stateful sequence: register a token.\nThe magic token 'token-admin-crash' must be created before BUG-010 can fire.",
+        "operationId": "create_token_tokens_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tokens/{token}/verify": {
+      "get": {
+        "tags": [
+          "H – Stateful sequence bug"
+        ],
+        "summary": "Verify a previously created token",
+        "description": "BUG-010 — admin-token privilege escalation crash.\nOnly fires when 'token-admin-crash' was previously registered via POST /tokens.\nThis tests whether the deduplicator (and the fuzzer) can handle bugs that\nrequire a specific multi-step setup sequence.\nPOST /__benchmark/reset clears token state so the sequence can be replayed cleanly.",
+        "operationId": "verify_token_tokens__token__verify_get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Token string to verify",
+              "title": "Token"
+            },
+            "description": "Token string to verify"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Verify Token Tokens  Token  Verify Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/flaky/{resource_id}": {
+      "get": {
+        "tags": [
+          "I – Deterministic path bug"
+        ],
+        "summary": "Fetch a resource (deterministically fails for resource_id % 7 == 0)",
+        "description": "BUG-011 — crashes when resource_id % 7 == 0 (i.e. 0, 7, 14, 21, …).\nAppears 'flaky' to a fuzzer that doesn't understand the pattern, but is\nfully deterministic — useful for measuring how replay-based deduplication\nhandles inputs that seem intermittent but are actually stable.",
+        "operationId": "flaky_resource_flaky__resource_id__get",
+        "parameters": [
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Resource ID",
+              "title": "Resource Id"
+            },
+            "description": "Resource ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Flaky Resource Flaky  Resource Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transform": {
+      "post": {
+        "tags": [
+          "J – Body-shape bug"
+        ],
+        "summary": "Transform a payload",
+        "description": "BUG-012 — crashes on a very specific request body shape:\n  {\"mode\": \"legacy\", \"payload\": {\"type\": \"bomb\"}}\nTests whether the deduplicator can handle crashes triggered by deep body\nstructure rather than simple query parameter values.",
+        "operationId": "transform_transform_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransformRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Transform Transform Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/generate": {
+      "post": {
+        "tags": [
+          "K – Same-endpoint distinct bugs"
+        ],
+        "summary": "Generate a report",
+        "description": "BUG-013 — report type 'financial_audit' triggers an integer overflow in the\n           accounting sub-module.\nBUG-014 — include_pii=True with report_type='gdpr_export' triggers a\n           null-pointer in the anonymisation layer.\n\nBoth return HTTP 500 JSON from the same endpoint.\nA coarse deduplicator (keying on endpoint + status + response class) will\nMERGE BUG-013 and BUG-014 — a false merge similar to the C case but on a\ndifferent endpoint, giving the benchmark more statistical signal.",
+        "operationId": "generate_report_reports_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Generate Report Reports Generate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/export/raw": {
+      "get": {
+        "tags": [
+          "L – Invalid JSON response bug"
+        ],
+        "summary": "Export raw data (returns malformed JSON on error)",
+        "description": "BUG-015 — when ?poison=true, the export pipeline crashes mid-serialisation\nand returns a truncated / invalid JSON body with Content-Type: application/json.\nThis tests whether the deduplicator correctly classifies the response class\nas 'invalid_json' rather than 'json', and whether it handles that class at all.",
+        "operationId": "export_raw_export_raw_get",
+        "parameters": [
+          {
+            "name": "poison",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Trigger BUG-015 malformed response",
+              "default": false,
+              "title": "Poison"
+            },
+            "description": "Trigger BUG-015 malformed response"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Export Raw Export Raw Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/__benchmark/reset": {
+      "post": {
+        "tags": [
+          "Benchmark control"
+        ],
+        "summary": "Reset all mutable benchmark state",
+        "description": "Clears all internal state (token store, etc.) so stateful tests can be\nreplayed from a clean slate.  Must be called between independent test runs\nthat involve stateful endpoints (H-class bugs).",
+        "operationId": "benchmark_reset___benchmark_reset_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Benchmark Reset   Benchmark Reset Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/__benchmark/health": {
+      "get": {
+        "tags": [
+          "Benchmark control"
+        ],
+        "summary": "Health",
+        "description": "Simple liveness probe — always returns 200 with no oracle header.",
+        "operationId": "health___benchmark_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health   Benchmark Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ParseRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format",
+            "default": "json"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ParseRequest"
+      },
+      "ReportRequest": {
+        "properties": {
+          "report_type": {
+            "type": "string",
+            "title": "Report Type"
+          },
+          "include_pii": {
+            "type": "boolean",
+            "title": "Include Pii",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "report_type"
+        ],
+        "title": "ReportRequest"
+      },
+      "TokenCreate": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "TokenCreate"
+      },
+      "TokenCreated": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "created"
+        ],
+        "title": "TokenCreated"
+      },
+      "TransformRequest": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "TransformRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+- method: GET
+  path: /math/divide
+  parameters:
+    ? - numerator
+      - Query
+    : !Number 1
+    ? - denominator
+      - Query
+    : !Number 0
+  body: !Empty

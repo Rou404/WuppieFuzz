@@ -1,0 +1,6 @@
+- method: POST
+  path: /parser
+  parameters: {}
+  body: !ApplicationJson
+    content: !String "<crash/>"
+    format: !String xml

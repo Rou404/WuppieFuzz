@@ -1,0 +1,30 @@
+# Coverage configuration for the synthetic FastAPI benchmark in this directory.
+# Launch from scripts/ with:
+# COVERAGE_PROCESS_START="$(pwd)/.coveragerc" uvicorn main:app --host 0.0.0.0 --port 8080
+
+[run]
+branch = True
+source =
+    .
+omit =
+    sitecustomize.py
+    */sitecustomize.py
+    evaluate_dedup_oracle.py
+    test.py
+    tests/*
+    */tests/*
+    venv/*
+    */venv/*
+    .venv/*
+    */.venv/*
+    */site-packages/*
+    /usr/lib/python*
+    /usr/local/lib/python*
+    */__pycache__/*
+
+[report]
+skip_empty = True
+show_missing = True
+
+[html]
+show_contexts = True

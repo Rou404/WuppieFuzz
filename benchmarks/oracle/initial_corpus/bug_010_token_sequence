@@ -1,0 +1,12 @@
+- method: POST
+  path: /tokens
+  parameters: {}
+  body: !ApplicationJson
+    token: !String token-admin-crash
+- method: GET
+  path: /tokens/{token}/verify
+  parameters:
+    ? - token
+      - Path
+    : !String token-admin-crash
+  body: !Empty
