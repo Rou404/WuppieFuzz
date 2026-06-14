@@ -1,0 +1,7 @@
+- method: GET
+  path: /cache/export
+  parameters:
+    ? - corrupt
+      - Query
+    : !Bool true
+  body: !Empty

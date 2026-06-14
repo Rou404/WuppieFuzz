@@ -1,0 +1,7 @@
+- method: GET
+  path: /export/raw
+  parameters:
+    ? - poison
+      - Query
+    : !Bool true
+  body: !Empty

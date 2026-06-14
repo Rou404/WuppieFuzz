@@ -1,0 +1,7 @@
+- method: GET
+  path: /strict/{item_id}
+  parameters:
+    ? - item_id
+      - Path
+    : !Number 0
+  body: !Empty

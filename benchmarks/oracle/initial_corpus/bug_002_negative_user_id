@@ -1,0 +1,7 @@
+- method: GET
+  path: /users/{user_id}
+  parameters:
+    ? - user_id
+      - Path
+    : !Number -1
+  body: !Empty

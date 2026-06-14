@@ -1,0 +1,7 @@
+- method: GET
+  path: /flaky/{resource_id}
+  parameters:
+    ? - resource_id
+      - Path
+    : !Number 7
+  body: !Empty

@@ -1,0 +1,7 @@
+- method: POST
+  path: /transform
+  parameters: {}
+  body: !ApplicationJson
+    mode: !String legacy
+    payload:
+      type: !String bomb

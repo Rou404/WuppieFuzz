@@ -1,0 +1,7 @@
+- method: GET
+  path: /legacy
+  parameters:
+    ? - mode
+      - Query
+    : !String v1
+  body: !Empty

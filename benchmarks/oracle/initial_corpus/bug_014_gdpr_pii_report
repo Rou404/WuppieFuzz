@@ -1,0 +1,6 @@
+- method: POST
+  path: /reports/generate
+  parameters: {}
+  body: !ApplicationJson
+    report_type: !String gdpr_export
+    include_pii: !Bool true
